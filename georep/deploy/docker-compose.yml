@@ -1,0 +1,120 @@
+services:
+  postgres-master:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: articles
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../db/init-master.sql:/docker-entrypoint-initdb.d/init-master.sql:ro
+    networks:
+      - demo-net
+
+  postgres-replica1:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: articles
+    ports:
+      - "5433:5432"
+    volumes:
+      - ../db/init-replica.sql:/docker-entrypoint-initdb.d/init-replica.sql:ro
+    networks:
+      - demo-net
+
+  postgres-replica2:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: articles
+    ports:
+      - "5434:5432"
+    volumes:
+      - ../db/init-replica.sql:/docker-entrypoint-initdb.d/init-replica.sql:ro
+    networks:
+      - demo-net
+
+  postgres-replica3:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: articles
+    ports:
+      - "5435:5432"
+    volumes:
+      - ../db/init-replica.sql:/docker-entrypoint-initdb.d/init-replica.sql:ro
+    networks:
+      - demo-net
+
+  postgres-replica4:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: articles
+    ports:
+      - "5436:5432"
+    volumes:
+      - ../db/init-replica.sql:/docker-entrypoint-initdb.d/init-replica.sql:ro
+    networks:
+      - demo-net
+
+  postgres-replica5:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: articles
+    ports:
+      - "5437:5432"
+    volumes:
+      - ../db/init-replica.sql:/docker-entrypoint-initdb.d/init-replica.sql:ro
+    networks:
+      - demo-net
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      MASTER_DSN: postgres://admin:pass@postgres-master:5432/articles?sslmode=disable
+      REPLICA1_DSN: postgres://admin:pass@postgres-replica1:5432/articles?sslmode=disable
+      REPLICA2_DSN: postgres://admin:pass@postgres-replica2:5432/articles?sslmode=disable
+      REPLICA3_DSN: postgres://admin:pass@postgres-replica3:5432/articles?sslmode=disable
+      REPLICA4_DSN: postgres://admin:pass@postgres-replica4:5432/articles?sslmode=disable
+      REPLICA5_DSN: postgres://admin:pass@postgres-replica5:5432/articles?sslmode=disable
+      API_PORT: "8080"
+    depends_on:
+      - postgres-master
+      - postgres-replica1
+      - postgres-replica2
+      - postgres-replica3
+      - postgres-replica4
+      - postgres-replica5
+    ports:
+      - "8080:8080"
+    networks:
+      - demo-net
+
+  frontend:
+     build:
+       context: ..
+       dockerfile: frontend/Dockerfile
+     ports:
+       - "5173:80"
+     depends_on:
+       - backend
+     environment:
+       VITE_API_BASE: http://localhost:8080/api
+     networks:
+       - demo-net
+
+
+networks:
+  demo-net:
+    driver: bridge
