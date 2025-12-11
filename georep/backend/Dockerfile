@@ -1,24 +1,30 @@
+# 1️⃣ Build aşaması
 FROM golang:1.23-alpine AS build
 
-WORKDIR /app/backend
-
-# Gerekli araçları kur ve modülleri indir
-RUN apk add --no-cache git
-COPY backend/go.mod backend/go.sum ./
-RUN go env -w GOPROXY=direct && go mod download
-
-# Uygulama kodunu kopyala
-COPY backend/ ./
-RUN go build -o /app/server ./cmd/server
-
-# ---- Runtime Stage ----
-FROM alpine:3.20
 WORKDIR /app
 
-# Binary ve GeoIP veritabanını ekle
-COPY --from=build /app/server /app/server
-COPY backend/GeoLite2-Country.mmdb /app/GeoLite2-Country.mmdb
+# go.mod ve go.sum dosyalarını kopyala
+COPY go.mod go.sum ./
+RUN go mod download
 
+# Kaynak kodları kopyala
+COPY . .
+
+# Derleme
+RUN go build -o /app/server ./cmd/server
+
+# 2️⃣ Final aşaması
+FROM alpine:3.20
+
+WORKDIR /app
+
+# Derlenmiş binary'yi kopyala
+COPY --from=build /app/server /app/server
+
+# GeoIP veritabanını kopyala
+COPY GeoLite2-Country.mmdb /app/GeoLite2-Country.mmdb
+
+# Port ve çalıştırma komutu
 ENV API_PORT=8080
 EXPOSE 8080
 
