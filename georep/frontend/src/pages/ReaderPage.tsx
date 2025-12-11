@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { apiGet } from "../api";
-import ArticleCard from "../components/ArticleCard";
 import { Article, ReplicationStatus, Session } from "../types";
 
 type Props = {
@@ -11,75 +10,55 @@ type Props = {
 export default function ReaderPage({ session, onLogout }: Props) {
   const [articles, setArticles] = useState<Article[]>([]);
   const [status, setStatus] = useState<ReplicationStatus[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState(false);
+  const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
 
-  // 🔁 LATENCY DURUMU
+  // ⚡ GECİKME VERİSİ
   const [latencyText, setLatencyText] = useState<string | null>(null);
   const [loadingLatency, setLoadingLatency] = useState(false);
 
   const loadArticles = async () => {
-    setError(null);
-    setLoading(true);
     try {
       const data = await apiGet<Article[]>(`/articles?region=${session.region}`);
       setArticles(data || []);
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Haberler yüklenirken hata oluştu."
-      );
-    } finally {
-      setLoading(false);
+    } catch {
+      setArticles([]);
     }
   };
 
   const loadStatus = async () => {
-    setLoadingStatus(true);
     try {
       const s = await apiGet<ReplicationStatus[]>("/replication-status");
-
-      // 🧠 Master olan EU replikasını filtrele
-      const filtered = (s || []).filter(
-        (rep) => rep.replica.toLowerCase() !== "eu"
-      );
-      setStatus(filtered);
+      setStatus((s || []).filter((r) => r.replica.toLowerCase() !== "eu"));
     } catch {
       setStatus([]);
-    } finally {
-      setLoadingStatus(false);
     }
   };
 
-  // 🔎 GECİKME ÖLÇÜMÜ – backend’in döndürdüğü stringi OLDUĞU GİBİ kullan
   const loadLatency = async () => {
     setLoadingLatency(true);
     try {
       const res = await apiGet<{
         region: string;
-        latency: string; // ⏱ Master’a göre gecikme kazancı… şeklinde hazır metin
+        latency: string;
         measured: string;
       }>(`/latency?region=${session.region}`);
-
-      // ❗ Burada sadece stringi kaydediyoruz, ekstra format YOK
       setLatencyText(res.latency);
-    } catch (e) {
+    } catch {
       setLatencyText("Gecikme ölçümü yapılamadı.");
     } finally {
       setLoadingLatency(false);
     }
   };
 
-  // Sayfa açıldığında ve bölge değiştiğinde otomatik yükleme + periyodik polling
   useEffect(() => {
     loadArticles();
     loadStatus();
-    loadLatency(); // Bölge seçildiğinde latency de ölçülsün
+    loadLatency();
 
     const interval = setInterval(() => {
-      loadStatus();
       loadArticles();
-    }, 3000);
+      loadStatus();
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [session.region]);
@@ -89,46 +68,65 @@ export default function ReaderPage({ session, onLogout }: Props) {
       <div className="header-row">
         <div>
           <h2>
-  		Okuyucu görünümü – Bölge: {session.region.toUpperCase()}{" "}
-  		{session.region.toLowerCase() === "eu"
-    			? "(Master sunucu)"
-    			: "(en yakın replika)"}
-	  </h2>
+            Okuyucu görünümü – Bölge: {session.region.toUpperCase()}{" "}
+            {session.region.toLowerCase() === "eu"
+              ? "(Master sunucu)"
+              : "(en yakın replika)"}
+          </h2>
           <p className="hint">
             Okuma istekleri seçtiğin bölgeye en yakın replika veya EU master’dan
             geliyor. Yazılar birkaç saniye gecikmeli güncellenebilir.
           </p>
 
-          {/* ⏱ LATENCY METNİ – SADECE BACKEND’İN GÖNDERDİĞİ METİN */}
           {latencyText && (
             <p
               className="hint"
-              style={{ marginTop: "0.5rem", fontWeight: 500 }}
+              style={{
+                marginTop: "0.5rem",
+                fontWeight: 500,
+                color: "#1e40af",
+              }}
             >
-              {latencyText}
+              {loadingLatency ? "Gecikme ölçülüyor..." : latencyText}
             </p>
           )}
         </div>
         <button onClick={onLogout}>Çıkış</button>
       </div>
 
-      {error && <p className="error">{error}</p>}
-
       <div className="actions" style={{ gap: "0.5rem" }}>
-        <button onClick={loadArticles} disabled={loading}>
-          {loading ? "Yükleniyor..." : "Haberleri yenile"}
-        </button>
-        <button onClick={loadStatus} disabled={loadingStatus}>
-          {loadingStatus ? "Durum getiriliyor..." : "Replikasyon durumu"}
-        </button>
+        <button onClick={loadArticles}>Yazıları yenile</button>
+        <button onClick={loadStatus}>Replikasyon durumu</button>
         <button onClick={loadLatency} disabled={loadingLatency}>
-          {loadingLatency ? "Gecikme ölçülüyor..." : "Gecikme kazancını ölç"}
+          {loadingLatency ? "Ölçülüyor..." : "Gecikme ölç"}
         </button>
       </div>
 
       <div className="stories">
         {articles.length > 0 ? (
-          articles.map((a) => <ArticleCard key={a.id} article={a} />)
+          articles.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                border: "1px solid #e2e8f0",
+                borderRadius: "8px",
+                padding: "15px",
+                marginBottom: "10px",
+                cursor: "pointer",
+                background: "#fff",
+                transition: "0.2s",
+              }}
+              onClick={() => setSelectedArticle(a)}
+            >
+              <h3 style={{ marginBottom: "6px" }}>{a.title}</h3>
+              <p style={{ fontSize: "14px", color: "#4a5568" }}>
+                {a.summary || a.content}
+              </p>
+              <p style={{ fontSize: "13px", color: "#718096", marginTop: "6px" }}>
+                ✍️ {a.author}
+              </p>
+            </div>
+          ))
         ) : (
           <p className="hint">
             Bu replikada henüz veri yok. Bir yazar EU master üzerinden yeni
@@ -137,86 +135,61 @@ export default function ReaderPage({ session, onLogout }: Props) {
         )}
       </div>
 
-      {/* Replikasyon Durumu (EU hariç) */}
-      {status.length > 0 && (
-        <div
-          style={{
-            backgroundColor: "#f0f9ff",
-            border: "1px solid #bae6fd",
-            borderRadius: "8px",
-            padding: "15px",
-            marginTop: "1rem",
-          }}
-        >
-          <h3 style={{ marginTop: 0, color: "#1e40af" }}>
-            🔄 Replikasyon Durumu
-          </h3>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-              gap: "10px",
-            }}
-          >
-            {status.map((s, i) => {
-              const colorMap =
-                {
-                  ok: {
-                    bg: "#c6f6d5",
-                    text: "#22543d",
-                    border: "#9ae6b4",
-                    icon: "✅",
-                  },
-                  error: {
-                    bg: "#fed7d7",
-                    text: "#742a2a",
-                    border: "#fc8181",
-                    icon: "❌",
-                  },
-                  syncing: {
-                    bg: "#feebc8",
-                    text: "#744210",
-                    border: "#fbd38d",
-                    icon: "🔄",
-                  },
-                }[s.status] || {
-                  bg: "#edf2f7",
-                  text: "#2d3748",
-                  border: "#e2e8f0",
-                  icon: "ℹ️",
-                };
-
-              return (
-                <div
-                  key={i}
-                  style={{
-                    backgroundColor: colorMap.bg,
-                    color: colorMap.text,
-                    padding: "10px",
-                    borderRadius: "6px",
-                    border: `1px solid ${colorMap.border}`,
-                    fontSize: "14px",
-                    fontWeight: "500",
-                  }}
-                >
-                  {colorMap.icon} {s.replica}: {s.status}
-                  {s.last_at && (
-                    <div
-                      style={{
-                        fontSize: "12px",
-                        marginTop: "4px",
-                        opacity: 0.8,
-                      }}
-                    >
-                      {new Date(s.last_at).toLocaleTimeString("tr-TR")}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+      {/* 📖 MAKALENİN UZUN DETAY GÖRÜNÜMÜ */}
+      {selectedArticle && (
+        <div style={modalOverlay}>
+          <div style={modalContent}>
+            <h2>{selectedArticle.title}</h2>
+            <p style={{ fontSize: "14px", color: "#4a5568", marginTop: "8px" }}>
+              {selectedArticle.author}
+            </p>
+            <hr style={{ margin: "12px 0" }} />
+            <p style={{ textAlign: "justify", lineHeight: "1.6" }}>
+              {selectedArticle.content_long ||
+                selectedArticle.content ||
+                "Bu makale için detaylı içerik bulunamadı."}
+            </p>
+            <button onClick={() => setSelectedArticle(null)} style={closeBtn}>
+              Kapat
+            </button>
           </div>
         </div>
       )}
     </section>
   );
 }
+
+// Modal stilleri
+const modalOverlay = {
+  position: "fixed",
+  top: 0,
+  left: 0,
+  width: "100%",
+  height: "100%",
+  backgroundColor: "rgba(0,0,0,0.6)",
+  display: "flex",
+  justifyContent: "center",
+  alignItems: "center",
+  zIndex: 1000,
+};
+
+const modalContent = {
+  backgroundColor: "white",
+  padding: "25px",
+  borderRadius: "10px",
+  width: "70%",
+  maxHeight: "80vh",
+  overflowY: "auto",
+  boxShadow: "0 5px 20px rgba(0,0,0,0.2)",
+};
+
+const closeBtn = {
+  marginTop: "20px",
+  background: "#3b82f6",
+  color: "white",
+  border: "none",
+  borderRadius: "6px",
+  padding: "8px 18px",
+  cursor: "pointer",
+  fontWeight: "600",
+};

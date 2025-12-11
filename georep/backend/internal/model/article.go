@@ -3,18 +3,20 @@ package model
 import "time"
 
 type Article struct {
-	ID        int64     `json:"id"`
-	Title     string    `json:"title"`
-	Content   string    `json:"content"`
-	Author    string    `json:"author"`
-	Region    string    `json:"region"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Title       string    `json:"title"`
+	Summary     string    `json:"summary"`
+	ContentLong string    `json:"content_long"`
+	Author      string    `json:"author"`
+	Region      string    `json:"region"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type CreateArticleInput struct {
-	Title   string `json:"title" binding:"required"`
-	Content string `json:"content" binding:"required"`
-	Author  string `json:"author" binding:"required"`
+	Title       string `json:"title" binding:"required"`
+	Summary     string `json:"summary" binding:"required"`
+	ContentLong string `json:"content_long" binding:"required"`
+	Author      string `json:"author" binding:"required"`
 }
 
 type ReplicationStatus struct {

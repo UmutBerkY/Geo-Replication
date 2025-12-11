@@ -1,162 +1,179 @@
 package article
 
 import (
-    "context"
-    "fmt"
-    "math/rand"
-    "strings"
-    "time"
+	"context"
+	"fmt"
+	"math/rand"
+	"strings"
+	"sync"
+	"time"
 
-    "geo-repl-demo/internal/model"
+	"geo-repl-demo/internal/model"
+	"geo-repl-demo/internal/replication"
 )
 
-// Service katmanı
+// Service iş katmanı (Repository + Replicator’ı birleştiriyor)
 type Service struct {
-    repo       *Repository
-    replicator interface {
-        Schedule(a model.Article)
-        FullSync()
-    }
+	repo       *Repository
+	replicator *replication.Replicator
+
+	mu               sync.Mutex
+	lastReplicaWrite []time.Time // her replikaya son yazma/silme zamanı (syncing göstermek için)
 }
 
-func NewService(repo *Repository, replicator interface {
-    Schedule(a model.Article)
-    FullSync()
-}) *Service {
-    return &Service{repo: repo, replicator: replicator}
+// Yeni servis oluşturur
+func NewService(repo *Repository, replicator *replication.Replicator) *Service {
+	return &Service{
+		repo:       repo,
+		replicator: replicator,
+	}
 }
 
-// ✅ Master’a yaz, ardından replikalara asenkron gönder
-func (s *Service) Create(ctx context.Context, in model.CreateArticleInput) (model.Article, error) {
-    a, err := s.repo.InsertMaster(ctx, in, "eu")
-    if err != nil {
-        return model.Article{}, err
-    }
-    s.replicator.Schedule(a)
-    return a, nil
-}
-
-// ✅ Bölgeye göre oku
+// 🔹 Makaleleri bölgeye göre getir
 func (s *Service) ListByRegion(ctx context.Context, region string) ([]model.Article, error) {
-    return s.repo.ListByRegion(ctx, region)
+	return s.repo.ListByRegion(ctx, region)
 }
 
-// ✅ Silme (master + tüm replikalar)
+// 🔹 Yeni makale ekle (master’a)
+func (s *Service) Create(ctx context.Context, in model.CreateArticleInput) (*model.Article, error) {
+	// Her zaman EU master’a yazıyoruz
+	a, err := s.repo.InsertMaster(ctx, in, "eu")
+	if err != nil {
+		return nil, err
+	}
+
+	// Replikasyon başlat (eventual consistency)
+	if s.replicator != nil {
+		go s.replicator.Schedule(a)
+	}
+
+	// Replikasyon durumu için kısa süre "syncing" göster
+	s.markReplicasSyncing()
+
+	return &a, nil
+}
+
+// 🔹 Makale sil – master + tüm replikalardan
 func (s *Service) Delete(ctx context.Context, id int64) error {
-    if err := s.repo.DeleteFromMaster(ctx, id); err != nil {
-        return err
-    }
-    for i := range s.repo.replicas.Pools {
-        _ = s.repo.DeleteFromReplica(ctx, i, id)
-    }
-    return nil
+	// Önce master’dan sil
+	if err := s.repo.DeleteFromMaster(ctx, id); err != nil {
+		return err
+	}
+
+	// Tüm replikalardan da sil
+	n := s.repo.NumReplicas()
+	for i := 0; i < n; i++ {
+		_ = s.repo.DeleteFromReplica(ctx, i, id)
+	}
+
+	// Silme işlemi de bir “replikasyon olayı” – kısa süre syncing gösterelim
+	s.markReplicasSyncing()
+
+	return nil
 }
 
-// ✅ Replikasyon durumlarını oku
+// 🔹 Replikasyon durumu (US/ASIA/SA/TR/AFRICA + syncing/ok)
 func (s *Service) ReplicationStatus(ctx context.Context) ([]model.ReplicationStatus, error) {
-    var masterCount int
-    err := s.repo.master.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM articles`).Scan(&masterCount)
-    if err != nil {
-        return nil, err
-    }
+	count := s.repo.NumReplicas()
+	regionLabels := []string{"US", "ASIA", "SA", "TR", "AFRICA"} // EU yok, çünkü master
 
-    replicaNames := []string{"US", "Asia", "SA", "Africa"}
-    statuses := make([]model.ReplicationStatus, 0, len(replicaNames))
+	statuses := make([]model.ReplicationStatus, 0, count)
 
-    for i, pool := range s.repo.replicas.Pools {
-        if i >= len(replicaNames) {
-            break
-        }
-        var replicaCount int
-        var lastUpdate *time.Time
-        err := pool.QueryRow(ctx, `SELECT COUNT(*), MAX(created_at) FROM articles`).Scan(&replicaCount, &lastUpdate)
+	// lastReplicaWrite için thread-safe snapshot al
+	s.mu.Lock()
+	snapshot := make([]time.Time, len(s.lastReplicaWrite))
+	copy(snapshot, s.lastReplicaWrite)
+	s.mu.Unlock()
 
-        state := "syncing"
-        if err != nil {
-            state = "error"
-        } else if replicaCount == masterCount && masterCount > 0 {
-            state = "ok"
-        }
+	now := time.Now()
 
-        lastAt := time.Time{}
-        if lastUpdate != nil {
-            lastAt = *lastUpdate
-        }
+	for i := 0; i < count; i++ {
+		label := fmt.Sprintf("Replica %d", i+1)
+		if i < len(regionLabels) {
+			label = regionLabels[i]
+		}
 
-        statuses = append(statuses, model.ReplicationStatus{
-            Replica: replicaNames[i],
-            Status:  state,
-            LastAt:  lastAt,
-        })
-    }
-    return statuses, nil
+		status := "ok"
+		if i < len(snapshot) && !snapshot[i].IsZero() {
+			// Son yazma/silme olayı üzerinden 3 sn’den az geçmişse "syncing"
+			if now.Sub(snapshot[i]) < 3*time.Second {
+				status = "syncing"
+			}
+		}
+
+		statuses = append(statuses, model.ReplicationStatus{
+			Replica: label,
+			Status:  status,
+			LastAt:  now,
+		})
+	}
+
+	return statuses, nil
 }
 
-func (s *Service) MeasureLatency(ctx context.Context, region string) (string, error) {
-    rand.Seed(time.Now().UnixNano())
+// ⏱ Master’a göre gecikme kazancı ölçümü (frontend için)
+// NOT: Handler sadece dönen stringi gösteriyor.
+func (s *Service) MeasureLatency(region string) (string, string) {
+	rand.Seed(time.Now().UnixNano())
+	r := strings.ToLower(region)
 
-    // 🌍 Ortalama gecikme değerleri (ms)
-    simulatedReplicaDelay := map[string]int64{
-        "eu":     0,   // Master kendi
-        "us":     80,
-        "asia":   120,
-        "sa":     100,
-        "africa": 130,
-    }
+	var latencyRegion, latencyMaster int
 
-    simulatedMasterDelay := map[string]int64{
-        "eu":     5,   // Master'a doğrudan erişim
-        "us":     220,
-        "asia":   270,
-        "sa":     250,
-        "africa": 260,
-    }
+	switch r {
+	case "eu":
+		// EU: master ile aynı – kazanç yok, ikisi de aynı değer
+		base := rand.Intn(20) + 25 // 25–44 ms
+		latencyRegion = base
+		latencyMaster = base
+	case "us":
+		// US: master (EU) uzak, replikaya yakın
+		latencyRegion = rand.Intn(40) + 40  // 40–79 ms (US replikası)
+		latencyMaster = rand.Intn(80) + 160 // 160–239 ms (EU master)
+	case "asia":
+		// ASIA: master daha uzak
+		latencyRegion = rand.Intn(50) + 50  // 50–99 ms
+		latencyMaster = rand.Intn(90) + 180 // 180–269 ms
+	case "sa":
+		// South America
+		latencyRegion = rand.Intn(45) + 45  // 45–89 ms
+		latencyMaster = rand.Intn(90) + 170 // 170–259 ms
+	case "africa", "tr":
+		// TR ve AFRICA – master’a görece uzak, kendi replikası daha yakın
+		latencyRegion = rand.Intn(35) + 35  // 35–69 ms
+		latencyMaster = rand.Intn(80) + 150 // 150–229 ms
+	default:
+		// Bilinmeyen bölge -> hafif fark
+		latencyRegion = rand.Intn(60) + 60  // 60–119 ms
+		latencyMaster = rand.Intn(40) + 120 // 120–159 ms
+	}
 
-    replicaDelay, ok1 := simulatedReplicaDelay[region]
-    masterDelay, ok2 := simulatedMasterDelay[region]
-    if !ok1 || !ok2 {
-        replicaDelay = 100
-        masterDelay = 250
-    }
+	diff := latencyMaster - latencyRegion
+	if diff < 0 {
+		diff = 0
+	}
 
-    // 🎲 ±10 ms jitter
-    jitter := func(base int64) int64 {
-        j := base + int64(rand.Intn(21)-10)
-        if j < 0 {
-            j = 0
-        }
-        return j
-    }
+	result := fmt.Sprintf(
+		"⏱ Master’a göre gecikme kazancı: %d ms (%s=%d ms, Master=%d ms)",
+		diff, strings.ToUpper(r), latencyRegion, latencyMaster,
+	)
 
-    masterDelay = jitter(masterDelay)
-    replicaDelay = jitter(replicaDelay)
-
-    // 🧭 Eğer EU bölgesindeyse → doğrudan master’dan oku
-    if strings.ToLower(region) == "eu" {
-        replicaDelay = masterDelay
-    }
-
-    // 🕒 Simülasyon
-    time.Sleep(time.Duration(masterDelay) * time.Millisecond)
-    masterLatency := masterDelay
-    time.Sleep(time.Duration(replicaDelay) * time.Millisecond)
-    replicaLatency := replicaDelay
-
-    // 🔢 Kazanç (Master - Replica)
-    gain := masterLatency - replicaLatency
-    if gain < 0 {
-        gain = 0
-    }
-
-    // ✅ Formatlı çıktı
-    result := fmt.Sprintf(
-        "⏱ Master’a göre gecikme kazancı: %d ms (%s=%d ms, Master=%d ms)",
-        gain,
-        strings.ToUpper(region),
-        replicaLatency,
-        masterLatency,
-    )
-
-    return result, nil
+	return r, result
 }
 
+// ------------------------------------------------------
+//  Yardımcı: Replikaları kısa süre “syncing” durumuna al
+// ------------------------------------------------------
+func (s *Service) markReplicasSyncing() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := s.repo.NumReplicas()
+	if len(s.lastReplicaWrite) < count {
+		s.lastReplicaWrite = make([]time.Time, count)
+	}
+
+	now := time.Now()
+	for i := 0; i < count; i++ {
+		s.lastReplicaWrite[i] = now
+	}
+}

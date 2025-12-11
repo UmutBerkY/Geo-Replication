@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"time"
@@ -38,10 +37,10 @@ func main() {
 	replicas := mustConnectReplicas(cfg.ReplicaDSNs())
 	defer replicas.Close()
 
-	// 🧱 Şema ve varsayılan veriler
+	// 🧱 Şema kontrolü (addDefaultArticles artık yok)
 	mustEnsureSchema(masterDB)
-	addDefaultArticles(masterDB)
 
+	// 🧩 Repository & Servis
 	repo := article.NewRepository(masterDB, replicas)
 	replicator := replication.NewReplicator(masterDB, replicas)
 	svc := article.NewService(repo, replicator)
@@ -91,15 +90,10 @@ func main() {
 			return
 		}
 
-		result, err := svc.MeasureLatency(c, region)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+		reg, result := svc.MeasureLatency(region)
 
-		// ❗ Burada sadece string döndürüyoruz, frontend bu string’i olduğu gibi gösteriyor
 		c.JSON(http.StatusOK, gin.H{
-			"region":   region,
+			"region":   reg,
 			"latency":  result,
 			"measured": time.Now().Format(time.RFC3339),
 		})
@@ -152,56 +146,4 @@ func mustEnsureSchema(master *db.Master) {
 		return
 	}
 	log.Fatalf("schema oluşturma başarısız")
-}
-
-func addDefaultArticles(master *db.Master) {
-	log.Println("🪶 Varsayılan makaleler ekleniyor (sadece master)")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	_, err := master.Pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS articles (
-			id SERIAL PRIMARY KEY,
-			title TEXT NOT NULL,
-			content TEXT NOT NULL,
-			author TEXT NOT NULL,
-			region TEXT NOT NULL,
-			created_at TIMESTAMP DEFAULT NOW()
-		);
-
-		INSERT INTO articles (title, content, author, region, created_at)
-		SELECT 'Yeni Nesil Replikasyon Sistemi', 
-		       'Veriler artık dünya genelinde anlık olarak kopyalanıyor.', 
-		       'Admin', 'eu', NOW()
-		WHERE NOT EXISTS (SELECT 1 FROM articles WHERE title='Yeni Nesil Replikasyon Sistemi');
-
-		INSERT INTO articles (title, content, author, region, created_at)
-		SELECT 'Küresel Veri Senkronizasyonu', 
-		       'Asia ve US bölgelerindeki veriler saniyeler içinde güncelleniyor.', 
-		       'Sistem', 'eu', NOW()
-		WHERE NOT EXISTS (SELECT 1 FROM articles WHERE title='Küresel Veri Senkronizasyonu');
-
-		INSERT INTO articles (title, content, author, region, created_at)
-		SELECT 'Go ve PostgreSQL ile Dağıtık Sistemler', 
-		       'Bu demo, Go dilinde PostgreSQL replikasyonunu gösteriyor.', 
-		       'DemoUser', 'eu', NOW()
-		WHERE NOT EXISTS (SELECT 1 FROM articles WHERE title='Go ve PostgreSQL ile Dağıtık Sistemler');
-
-		INSERT INTO articles (title, content, author, region, created_at)
-		SELECT 'Veri Tutarlılığı Testi', 
-		       'Eventual consistency mekanizması başarıyla çalışıyor.', 
-		       'Tester', 'eu', NOW()
-		WHERE NOT EXISTS (SELECT 1 FROM articles WHERE title='Veri Tutarlılığı Testi');
-
-		INSERT INTO articles (title, content, author, region, created_at)
-		SELECT 'TR Bölgesi için İlk Veri', 
-		       'Türkiye replikası 2 saniye gecikmeyle senkronize olur.', 
-		       'Umut', 'eu', NOW()
-		WHERE NOT EXISTS (SELECT 1 FROM articles WHERE title='TR Bölgesi için İlk Veri');
-	`)
-	if err != nil {
-		log.Printf("⚠️ Varsayılan makale ekleme hatası: %v", err)
-	} else {
-		log.Println("✅ Varsayılan makaleler eklendi")
-	}
 }
