@@ -1,9 +1,9 @@
 # ---- Build Stage ----
-FROM golang:1.23-alpine AS build
+FROM golang:1.23-bullseye AS build
 WORKDIR /app
 
-# 🧩 Git eklendi
-RUN apk add --no-cache git
+# Git ve temel araçları kur
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 COPY georep/backend/go.mod georep/backend/go.sum ./
 RUN go env -w GOPROXY=direct && go mod download
@@ -13,7 +13,7 @@ WORKDIR /app/backend
 RUN go build -o /app/server ./cmd/server
 
 # ---- Runtime Stage ----
-FROM alpine:3.20
+FROM debian:bullseye-slim
 WORKDIR /app
 
 COPY --from=build /app/server /app/server
